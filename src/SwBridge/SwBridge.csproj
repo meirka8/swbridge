@@ -1,0 +1,27 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <PackageId>SwBridge</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>Meir Kanevskiy</Authors>
+    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance, resolve open documents, and read the feature tree generically via schema-driven reflection.</Description>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <RepositoryUrl>https://github.com/meirka8/swbridge</RepositoryUrl>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageTags>solidworks;com;automation;cad</PackageTags>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SolidWorks.Interop.SldWorks" Version="32.1.0" />
+    <PackageReference Include="SolidWorks.Interop.swconst" Version="32.1.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <None Include="..\..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
