@@ -1,5 +1,8 @@
+using System.Linq;
+using System.Reflection;
 using System.Runtime.InteropServices;
 using System.Runtime.InteropServices.ComTypes;
+using SolidWorks.Interop.sldworks;
 
 namespace SwBridge;
 
@@ -17,37 +20,67 @@ public enum ComMemberKind
 }
 
 /// <summary>
-/// One member discovered on a late-bound COM object via its IDispatch type
-/// information — the raw material for building a <see cref="PropertySpec"/>
-/// without having to guess a member name.
+/// One member discovered on a late-bound COM object — the raw material for
+/// building a <see cref="PropertySpec"/> without having to guess a member name.
 /// </summary>
-/// <param name="Name">Member name, as declared by the object's type library.</param>
+/// <param name="Name">Member name, as declared by the object's type library or interop interface.</param>
 /// <param name="Kind">Whether this is a property getter, a property setter, or an ordinary method.</param>
 /// <param name="ParamCount">Number of parameters the member takes (0 for a bare property get).</param>
 /// <param name="ReturnType">
-/// Best-effort human-readable VARTYPE name of the return value (e.g. <c>VT_R8</c>,
-/// <c>VT_BSTR</c>, <c>VT_DISPATCH</c>), or null when it could not be determined.
-/// For <see cref="ComMemberKind.PropertySet"/> this describes the setter's own
-/// return (normally <c>VT_VOID</c>), not the value it accepts.
+/// Best-effort human-readable name of the return value's type, or null when it
+/// could not be determined. Its shape depends on which discovery path produced
+/// the entry: <see cref="ComTypeInspector.DescribeMembers(object?)"/> (the
+/// <c>ITypeInfo</c> path) reports a VARTYPE name (e.g. <c>VT_R8</c>,
+/// <c>VT_BSTR</c>, <c>VT_DISPATCH</c>); <see cref="ComTypeInspector.DescribeMembersViaInterop(object?, Func{Type, bool}?)"/>
+/// (the interop-assembly path) reports a CLR type name (e.g. <c>Double</c>,
+/// <c>String</c>, <c>Void</c>) instead, since it comes from ordinary .NET
+/// reflection rather than a VARTYPE. For <see cref="ComMemberKind.PropertySet"/>
+/// this describes the setter's own return (normally void), not the value it accepts.
 /// </param>
 public sealed record ComMemberInfo(string Name, ComMemberKind Kind, int ParamCount, string? ReturnType);
 
 /// <summary>
-/// Discovers the members a late-bound COM object actually exposes by reading
-/// its type information (<c>ITypeInfo</c>, reached via <c>IDispatch::GetTypeInfo</c>
-/// or, when that reports none, the object's <c>IProvideClassInfo</c>), instead of
+/// Discovers the members a late-bound COM object actually exposes, instead of
 /// guessing member names. This is what lets a consumer find the real
 /// property/method surface of an opaque object at runtime, and is the
 /// foundation for enriching a schema (see <see cref="PropertySpec"/>) with
 /// entries that are known to exist rather than assumed.
 /// </summary>
 /// <remarks>
-/// Not every COM object supports runtime introspection — some expose IDispatch
-/// purely for invoking members by name (via <c>GetIDsOfNames</c>/<c>Invoke</c>,
-/// the mechanism <see cref="ComPropertyReader"/> uses) without publishing a type
-/// description at all. For such objects <see cref="DescribeMembers(object?)"/>
-/// returns an empty list; that is not itself proof the object has no members,
-/// only that it does not support this particular discovery mechanism.
+/// <para>
+/// Two independent discovery mechanisms are offered, because no single one
+/// works for every SolidWorks COM object:
+/// </para>
+/// <list type="number">
+/// <item>
+/// <description>
+/// <see cref="DescribeMembers(object?)"/> reads the object's own type
+/// information (<c>ITypeInfo</c>, reached via <c>IDispatch::GetTypeInfo</c> or,
+/// when that reports none, the object's <c>IProvideClassInfo</c>). This works
+/// for general COM automation objects and for creatable SolidWorks document
+/// coclasses (e.g. <c>ModelDoc2</c>/<c>PartDoc</c>), but many internal SolidWorks
+/// objects — notably <c>IFeature</c> and the feature-definition objects from
+/// <c>IFeature.GetDefinition()</c> — implement neither and report no type
+/// information at all; not every COM object supports runtime introspection,
+/// since some expose IDispatch purely for invoking members by name (via
+/// <c>GetIDsOfNames</c>/<c>Invoke</c>, the mechanism <see cref="ComPropertyReader"/>
+/// uses). For such objects this returns an empty list — not itself proof the
+/// object has no members, only that it does not support this mechanism.
+/// </description>
+/// </item>
+/// <item>
+/// <description>
+/// <see cref="DescribeMembersViaInterop(object?, Func{Type, bool}?)"/> is the
+/// fallback for exactly that case: it probes the object with a real COM
+/// QueryInterface against every <c>[ComImport]</c> interface declared in the
+/// referenced <c>SolidWorks.Interop.sldworks</c> assembly (e.g.
+/// <c>IExtrudeFeatureData2</c>), and reflects whichever interfaces the object
+/// actually implements. Verified live: this recovers <c>GetDepth</c> and the
+/// rest of an Extrusion feature definition's real members when the
+/// <c>ITypeInfo</c> path finds nothing.
+/// </description>
+/// </item>
+/// </list>
 /// </remarks>
 public static class ComTypeInspector
 {
@@ -297,5 +330,142 @@ public static class ComTypeInspector
         }
 
         return name;
+    }
+
+    // Lazily enumerated once per process: every public [ComImport] interface
+    // declared in the SolidWorks interop assembly. There are a few thousand of
+    // these; building the list is the expensive part, not testing any one of
+    // them, so it is cached rather than re-walked on every call.
+    private static readonly Lazy<IReadOnlyList<Type>> InteropComImportInterfaces = new(() =>
+        typeof(ISldWorks).Assembly.GetTypes()
+            .Where(t => t.IsInterface && t.IsDefined(typeof(ComImportAttribute), inherit: false))
+            .ToArray());
+
+    /// <summary>
+    /// Finds interfaces from the SolidWorks interop assembly
+    /// (<c>SolidWorks.Interop.sldworks</c>) that <paramref name="comObject"/>
+    /// actually implements, by attempting a real COM QueryInterface for each
+    /// candidate interface's IID (via <see cref="Type.IsInstanceOfType"/>). This
+    /// is how the interop-assembly fallback (see <see cref="DescribeMembersViaInterop"/>)
+    /// identifies which concrete definition interface (e.g. <c>IExtrudeFeatureData2</c>)
+    /// an otherwise-opaque <c>object</c> reference really implements.
+    /// </summary>
+    /// <param name="comObject">The COM object to probe. Null yields an empty list.</param>
+    /// <param name="filter">
+    /// Optional predicate over candidate interface <see cref="Type"/>s, applied
+    /// before probing. The interop assembly declares several thousand interfaces;
+    /// an unfiltered call probes all of them with a QueryInterface each — fine
+    /// for an explicit, occasional discovery call, but callers with a good guess
+    /// at the interface family (e.g. interface name containing <c>"FeatureData"</c>)
+    /// should filter to keep the probe count small and targeted. Callers can
+    /// always call this unfiltered themselves for a full scan.
+    /// </param>
+    public static IReadOnlyList<Type> FindImplementedInteropInterfaces(object? comObject, Func<Type, bool>? filter = null)
+    {
+        if (comObject == null)
+        {
+            return Array.Empty<Type>();
+        }
+
+        var matches = new List<Type>();
+        foreach (var candidate in InteropComImportInterfaces.Value)
+        {
+            if (filter != null && !filter(candidate))
+            {
+                continue;
+            }
+
+            try
+            {
+                if (candidate.IsInstanceOfType(comObject))
+                {
+                    matches.Add(candidate);
+                }
+            }
+            catch (Exception)
+            {
+                // A failed probe (e.g. InvalidCastException, COMException) just means "not this interface".
+            }
+        }
+
+        return matches;
+    }
+
+    /// <summary>
+    /// Discovers members via the interop-assembly cast-probing fallback: finds
+    /// which SolidWorks interop interfaces <paramref name="comObject"/> implements
+    /// (<see cref="FindImplementedInteropInterfaces"/>) and reflects their public
+    /// members into the same <see cref="ComMemberInfo"/> shape used by
+    /// <see cref="DescribeMembers(object?)"/>. Use this when that method returns
+    /// an empty list — the object may still expose members, just not through
+    /// <c>ITypeInfo</c>.
+    /// </summary>
+    /// <param name="comObject">The COM object to inspect. Null yields an empty list.</param>
+    /// <param name="filter">See <see cref="FindImplementedInteropInterfaces"/>.</param>
+    public static IReadOnlyList<ComMemberInfo> DescribeMembersViaInterop(object? comObject, Func<Type, bool>? filter = null)
+    {
+        var interfaces = FindImplementedInteropInterfaces(comObject, filter);
+        if (interfaces.Count == 0)
+        {
+            return Array.Empty<ComMemberInfo>();
+        }
+
+        var results = new List<ComMemberInfo>();
+        var seen = new HashSet<(string Name, ComMemberKind Kind, int ParamCount)>();
+        foreach (var interfaceType in interfaces)
+        {
+            foreach (var member in DescribeInterfaceMembers(interfaceType))
+            {
+                if (seen.Add((member.Name, member.Kind, member.ParamCount)))
+                {
+                    results.Add(member);
+                }
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
+    /// Reflects the public members of a single interop interface type into
+    /// <see cref="ComMemberInfo"/> entries: property getters/setters from
+    /// <see cref="Type.GetProperties()"/>, and ordinary methods from
+    /// <see cref="Type.GetMethods()"/> (skipping the compiler-generated
+    /// <c>get_</c>/<c>set_</c> accessor methods already covered via properties).
+    /// Pure reflection over the <see cref="Type"/>'s metadata — no COM object and
+    /// no SolidWorks instance are needed, which is why this is exposed
+    /// internally: it can be unit-tested directly against an interop type like
+    /// <c>typeof(IExtrudeFeatureData2)</c>.
+    /// </summary>
+    internal static IReadOnlyList<ComMemberInfo> DescribeInterfaceMembers(Type interfaceType)
+    {
+        var results = new List<ComMemberInfo>();
+
+        foreach (var property in interfaceType.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+        {
+            var getMethod = property.GetGetMethod();
+            if (getMethod != null)
+            {
+                results.Add(new ComMemberInfo(property.Name, ComMemberKind.PropertyGet, getMethod.GetParameters().Length, getMethod.ReturnType.Name));
+            }
+
+            var setMethod = property.GetSetMethod();
+            if (setMethod != null)
+            {
+                results.Add(new ComMemberInfo(property.Name, ComMemberKind.PropertySet, setMethod.GetParameters().Length, setMethod.ReturnType.Name));
+            }
+        }
+
+        foreach (var method in interfaceType.GetMethods(BindingFlags.Public | BindingFlags.Instance))
+        {
+            if (method.IsSpecialName)
+            {
+                continue; // get_/set_/add_/remove_ accessors — already covered above (properties) or not relevant (events)
+            }
+
+            results.Add(new ComMemberInfo(method.Name, ComMemberKind.Method, method.GetParameters().Length, method.ReturnType.Name));
+        }
+
+        return results;
     }
 }

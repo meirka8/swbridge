@@ -3,6 +3,7 @@
 // No MCP involved — this is plain library usage.
 using System.Linq;
 using System.Text.Json;
+using SolidWorks.Interop.sldworks;
 using SwBridge;
 
 var connection = new SwConnection();
@@ -71,8 +72,36 @@ var target = features.FirstOrDefault(f => string.Equals(f.Name, "Boss-Extrude1",
 
 if (target != null)
 {
-    Console.WriteLine($"\nDiscovered members of '{target.Name}' [{target.TypeName}] definition:");
+    Console.WriteLine($"\nDiscovered members of '{target.Name}' [{target.TypeName}] definition (combined, as SwDocument exposes it):");
     Console.WriteLine(JsonSerializer.Serialize(active.DescribeFeatureDefinition(target.Name), json));
+
+    // Show the two tiers explicitly, working from the raw definition object:
+    // 1) the ITypeInfo attempt (expected empty for a feature definition — see CLAUDE.md), then
+    // 2) the interop-assembly cast-probing fallback that recovers its real members.
+    if (active.Model.FeatureManager.GetFeatures(false) is object[] rawFeatures)
+    {
+        var rawFeature = rawFeatures
+            .Cast<Feature>()
+            .FirstOrDefault(f => string.Equals(f.Name, target.Name, StringComparison.OrdinalIgnoreCase));
+        var definition = rawFeature?.GetDefinition();
+
+        Console.WriteLine($"\nITypeInfo attempt member count: {ComTypeInspector.DescribeMembers(definition).Count}");
+
+        bool FeatureDataFilter(Type t) => t.Name.Contains("FeatureData", StringComparison.OrdinalIgnoreCase);
+        var matchedInterfaces = ComTypeInspector.FindImplementedInteropInterfaces(definition, FeatureDataFilter);
+        Console.WriteLine($"Interop-assembly matched interfaces: {string.Join(", ", matchedInterfaces.Select(t => t.Name))}");
+
+        var interopMembers = ComTypeInspector.DescribeMembersViaInterop(definition, FeatureDataFilter);
+        Console.WriteLine($"Interop-assembly member count: {interopMembers.Count}");
+        Console.WriteLine("First 30 members via interop fallback:");
+        Console.WriteLine(JsonSerializer.Serialize(interopMembers.Take(30), json));
+
+        ComLifetime.Release(definition);
+        foreach (var f in rawFeatures)
+        {
+            ComLifetime.Release(f);
+        }
+    }
 }
 else
 {

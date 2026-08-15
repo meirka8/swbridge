@@ -51,8 +51,8 @@ A runnable version of this lives in [`samples/SwBridge.Sample`](samples/SwBridge
 ## Discovering members instead of guessing them
 
 Writing a `PropertySpec` above requires knowing the real member name and shape
-in advance. `ComTypeInspector` finds that shape at runtime, for any late-bound
-COM object, by reading its type information:
+in advance. `ComTypeInspector` finds that shape at runtime instead of guessing
+it, via two independent mechanisms:
 
 ```csharp
 var members = doc.DescribeFeatureDefinition("Boss-Extrude1");
@@ -63,11 +63,24 @@ foreach (var m in members ?? Array.Empty<ComMemberInfo>())
 var members2 = ComTypeInspector.DescribeMembers(someComObject);
 ```
 
-Not every COM object publishes runtime type information — some SolidWorks
-objects only support invoking members by name (the mechanism `ComPropertyReader`
-uses), not enumerating them. `DescribeMembers` returns an empty list for those
-rather than throwing; an empty result means "not introspectable," not
-necessarily "no members."
+1. **`ComTypeInspector.DescribeMembers`** reads the object's own type information
+   (`ITypeInfo`, via `IDispatch::GetTypeInfo` or, when that reports none, the
+   object's `IProvideClassInfo`). This works for general COM automation objects
+   and for creatable SolidWorks document coclasses (`ModelDoc2`/`PartDoc`), but
+   many internal SolidWorks objects — notably feature-definition objects from
+   `IFeature.GetDefinition()` — publish none at all and return an empty list.
+2. **`ComTypeInspector.DescribeMembersViaInterop`** is the fallback for exactly
+   that case: it probes the object with a real COM QueryInterface against the
+   `[ComImport]` interfaces declared in the referenced `SolidWorks.Interop.sldworks`
+   assembly (e.g. `IExtrudeFeatureData2`), then reflects whichever interfaces the
+   object actually implements — pass a `filter` (e.g. interface name containing
+   `"FeatureData"`) to keep the probe count small, since an unfiltered call
+   probes every interface in the assembly. `DescribeFeatureDefinition` already
+   does this automatically when the `ITypeInfo` path finds nothing.
+
+An empty result from `DescribeMembers` alone means "not introspectable via
+`ITypeInfo`," not necessarily "no members" — try `DescribeMembersViaInterop`
+next. Neither mechanism throws for objects it can't handle.
 
 ## Design notes
 

@@ -123,20 +123,33 @@ public static class ModelInspector
             new Point3(box[3], box[4], box[5]));
     }
 
+    // Applied to interop-assembly candidate interfaces when the ITypeInfo path
+    // finds nothing for a feature definition; keeps the QueryInterface probe
+    // count in the low hundreds instead of scanning the whole interop assembly.
+    // Callers who want a full, unfiltered scan can call
+    // ComTypeInspector.DescribeMembersViaInterop directly.
+    private static bool IsFeatureDataInterface(Type type) =>
+        type.Name.Contains("FeatureData", StringComparison.OrdinalIgnoreCase);
+
     /// <summary>
     /// Finds a feature by name (case-insensitive) and discovers the members its
-    /// definition object exposes, via <see cref="ComTypeInspector.DescribeMembers(object?)"/>.
-    /// Use this to find the real member names/signatures for a feature type before
-    /// writing a <see cref="PropertySpec"/> for it, instead of guessing.
+    /// definition object exposes: first via <see cref="ComTypeInspector.DescribeMembers(object?)"/>
+    /// (reading the definition's own type information), and if that finds
+    /// nothing, via <see cref="ComTypeInspector.DescribeMembersViaInterop(object?, Func{Type, bool}?)"/>
+    /// (probing which <c>*FeatureData*</c> interop interface the definition
+    /// implements and reflecting that instead). Use this to find the real
+    /// member names/signatures for a feature type before writing a
+    /// <see cref="PropertySpec"/> for it, instead of guessing.
     /// </summary>
     /// <remarks>
     /// Verified live against SolidWorks 2024: feature-definition objects are not
-    /// always introspectable — SolidWorks does not publish runtime type
-    /// information for every internal object. A non-null but empty result means
-    /// the definition object was found but does not support this discovery
-    /// mechanism (see <see cref="ComTypeInspector"/> remarks); it does not mean
-    /// the definition has no members, and member names known from documentation
-    /// or prior use can still be read directly via <see cref="ComPropertyReader"/>.
+    /// introspectable via <c>ITypeInfo</c> — SolidWorks does not publish runtime
+    /// type information for these internal objects (see <see cref="ComTypeInspector"/>
+    /// remarks) — but the interop-assembly fallback recovers their real members
+    /// (e.g. <c>GetDepth</c>, <c>BothDirections</c> on an Extrusion's
+    /// <c>IExtrudeFeatureData2</c>). A non-null but empty result means neither
+    /// mechanism found anything; member names known from documentation or prior
+    /// use can still be read directly via <see cref="ComPropertyReader"/>.
     /// </remarks>
     /// <param name="doc">Document to search.</param>
     /// <param name="featureName">Feature name as shown in the tree, e.g. <c>Boss-Extrude1</c>.</param>
@@ -164,7 +177,15 @@ public static class ModelInspector
                 var definition = swFeature.GetDefinition();
                 try
                 {
-                    return definition == null ? null : ComTypeInspector.DescribeMembers(definition);
+                    if (definition == null)
+                    {
+                        return null;
+                    }
+
+                    var members = ComTypeInspector.DescribeMembers(definition);
+                    return members.Count > 0
+                        ? members
+                        : ComTypeInspector.DescribeMembersViaInterop(definition, IsFeatureDataInterface);
                 }
                 finally
                 {
