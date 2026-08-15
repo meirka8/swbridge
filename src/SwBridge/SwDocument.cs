@@ -37,4 +37,8 @@ public sealed class SwDocument
     /// <inheritdoc cref="ModelInspector.GetPartInfo"/>
     public PartInfo? GetPartInfo(Func<string, IReadOnlyList<PropertySpec>?>? propertyLookup = null) =>
         ModelInspector.GetPartInfo(Model, propertyLookup);
+
+    /// <inheritdoc cref="ModelInspector.DescribeFeatureDefinition"/>
+    public IReadOnlyList<ComMemberInfo>? DescribeFeatureDefinition(string featureName) =>
+        ModelInspector.DescribeFeatureDefinition(Model, featureName);
 }

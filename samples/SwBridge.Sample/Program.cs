@@ -1,6 +1,7 @@
 // Live smoke test for SwBridge: attaches to a running SolidWorks instance,
 // lists open documents, and dumps the feature tree of the active document.
 // No MCP involved — this is plain library usage.
+using System.Linq;
 using System.Text.Json;
 using SwBridge;
 
@@ -58,6 +59,24 @@ if (active.Info.Type == SwDocumentType.Part)
 {
     Console.WriteLine("\nPart info:");
     Console.WriteLine(JsonSerializer.Serialize(active.GetPartInfo(Lookup), json));
+}
+
+// Discovery demo: find "Boss-Extrude1", or else the first Extrusion feature,
+// and dump every member its definition object actually exposes. This is the
+// mechanism a schema-enrichment consumer would use to find real member names
+// instead of guessing them.
+var features = active.GetFeatures();
+var target = features.FirstOrDefault(f => string.Equals(f.Name, "Boss-Extrude1", StringComparison.OrdinalIgnoreCase))
+    ?? features.FirstOrDefault(f => string.Equals(f.TypeName, "Extrusion", StringComparison.OrdinalIgnoreCase));
+
+if (target != null)
+{
+    Console.WriteLine($"\nDiscovered members of '{target.Name}' [{target.TypeName}] definition:");
+    Console.WriteLine(JsonSerializer.Serialize(active.DescribeFeatureDefinition(target.Name), json));
+}
+else
+{
+    Console.WriteLine("\nNo Boss-Extrude1 / Extrusion feature found for the discovery demo.");
 }
 
 return 0;

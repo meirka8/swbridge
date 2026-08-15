@@ -6,9 +6,9 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>SwBridge</PackageId>
-    <Version>0.1.0</Version>
+    <Version>0.2.0</Version>
     <Authors>Meir Kanevskiy</Authors>
-    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance, resolve open documents, and read the feature tree generically via schema-driven reflection.</Description>
+    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance, resolve open documents, read the feature tree generically via schema-driven reflection, and discover a late-bound COM object's real members via its type information.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/meirka8/swbridge</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>

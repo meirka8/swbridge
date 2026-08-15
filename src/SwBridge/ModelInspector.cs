@@ -122,4 +122,61 @@ public static class ModelInspector
             new Point3(box[0], box[1], box[2]),
             new Point3(box[3], box[4], box[5]));
     }
+
+    /// <summary>
+    /// Finds a feature by name (case-insensitive) and discovers the members its
+    /// definition object exposes, via <see cref="ComTypeInspector.DescribeMembers(object?)"/>.
+    /// Use this to find the real member names/signatures for a feature type before
+    /// writing a <see cref="PropertySpec"/> for it, instead of guessing.
+    /// </summary>
+    /// <remarks>
+    /// Verified live against SolidWorks 2024: feature-definition objects are not
+    /// always introspectable — SolidWorks does not publish runtime type
+    /// information for every internal object. A non-null but empty result means
+    /// the definition object was found but does not support this discovery
+    /// mechanism (see <see cref="ComTypeInspector"/> remarks); it does not mean
+    /// the definition has no members, and member names known from documentation
+    /// or prior use can still be read directly via <see cref="ComPropertyReader"/>.
+    /// </remarks>
+    /// <param name="doc">Document to search.</param>
+    /// <param name="featureName">Feature name as shown in the tree, e.g. <c>Boss-Extrude1</c>.</param>
+    /// <returns>
+    /// The discovered members, or null when no feature with that name exists or
+    /// its definition could not be obtained (e.g. <c>GetDefinition()</c> returned null).
+    /// </returns>
+    public static IReadOnlyList<ComMemberInfo>? DescribeFeatureDefinition(ModelDoc2 doc, string featureName)
+    {
+        if (doc.FeatureManager.GetFeatures(false) is not object[] features)
+        {
+            return null;
+        }
+
+        foreach (var featureObject in features)
+        {
+            var swFeature = (Feature)featureObject;
+            try
+            {
+                if (!string.Equals(swFeature.Name, featureName, StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var definition = swFeature.GetDefinition();
+                try
+                {
+                    return definition == null ? null : ComTypeInspector.DescribeMembers(definition);
+                }
+                finally
+                {
+                    ComLifetime.Release(definition);
+                }
+            }
+            finally
+            {
+                ComLifetime.Release(swFeature);
+            }
+        }
+
+        return null;
+    }
 }
