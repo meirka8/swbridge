@@ -82,6 +82,76 @@ An empty result from `DescribeMembers` alone means "not introspectable via
 `ITypeInfo`," not necessarily "no members" — try `DescribeMembersViaInterop`
 next. Neither mechanism throws for objects it can't handle.
 
+## Writing to SolidWorks
+
+Everything above is read-only and forgiving: an unreadable property is just
+absent. Writing is not — a wrong call can modify the wrong customer's part —
+so the write surface is deliberately narrower, more explicit, and lives behind
+its own types rather than reusing the read-side ones.
+
+```csharp
+using System.Runtime.InteropServices; // DispatchWrapper — see the note below
+
+var doc = documents.NewPart(); // or a template path; new document, dispatcher-routed like everything else
+
+var extension = ComPath.Resolve(doc.Model, "Extension").Value;
+ComInvoker.InvokeMethod(extension, "SelectByID2",
+    new object?[] { "Front Plane", "PLANE", 0.0, 0.0, 0.0, false, 0, new DispatchWrapper(null), 0 });
+
+var sketchManager = ComPath.Resolve(doc.Model, "SketchManager").Value;
+ComInvoker.InvokeMethod(sketchManager, "InsertSketch", new object?[] { true });
+
+var circle = ComInvoker.InvokeMethod(sketchManager, "CreateCircleByRadius", new object?[] { 0.0, 0.0, 0.0, 0.01 });
+var segmentRef = ResultConverters.ToSketchSegmentRef(circle.Value); // {Id, SegmentType} — the live ISketchSegment is released here
+
+var segmentCountBefore = DocumentStateProbes.GetSketchSegmentCount(doc.Model);
+```
+
+> Verified live: a `null` argument for a COM-interface-typed parameter (e.g.
+> `SelectByID2`'s `Callout`) needs `new DispatchWrapper(null)`, not a bare `null`
+> — an early-bound call lets the compiler marshal a literal `null` correctly,
+> but `ComInvoker`'s late-bound `Type.InvokeMember` has no parameter types to go
+> by, and a bare `null` marshals as `VT_EMPTY`, which SolidWorks rejects with
+> `DISP_E_TYPEMISMATCH`.
+
+- **`ComInvoker`** is the only write-dispatch door: `InvokeMethod`/`GetProperty`/`SetProperty`,
+  each exactly one COM dispatch flag — never combined, unlike `ComPropertyReader`'s
+  deliberately-combined read-only flags. Every call returns a typed `InvokeOutcome`
+  (`Success`, `Value`, `FailureDetail`) instead of throwing for a member-level failure,
+  because SolidWorks' write API reports most failures as `Nothing`/`False`, not exceptions.
+- **`ComPath`** resolves an open, dotted, read-only property path (`"Extension.SelectionManager"`)
+  from an application or document root — the same reflection `ComPropertyReader`
+  uses, one hop per segment — so a target does not need a closed enum of known
+  managers; a bad path is a runtime `ComPathResult` failure, not a compile-time one.
+- **`ResultConverters`** turn a live COM return (a feature, a sketch segment) into a
+  plain, serializable DTO (`FeatureRef`, `SketchSegmentRef`) and release the RCW on
+  the way out — a live interface pointer should never survive past the call that produced it.
+- **`DocumentStateProbes`** are the cheap, targeted reads (feature count, sketch mode,
+  sketch segment count, selection count, rebuild state) a caller uses to check a write
+  actually did something, since SolidWorks' return values alone are not trustworthy.
+- **`SwDispatcher`** (see below) is what makes composing these safe: everything above
+  runs on one dedicated STA thread per `SwConnection`, so a write step and a read
+  step never interleave.
+
+This mirrors the asymmetry deliberately: read failures are absorbed (`ComPropertyReader`
+returns "absent"), write failures are surfaced (`ComInvoker` returns a typed outcome
+you must check). Treating an unchecked `InvokeOutcome` as success is exactly the mistake
+this shape exists to make hard to make silently.
+
+## The dispatcher
+
+`SwConnection` owns a dedicated STA thread (`SwDispatcher`) that every COM touch
+in this library — the read path above and the write primitives — runs on,
+blocking the calling thread for the result. This exists because SolidWorks
+write calls are stateful (an active sketch, a selection list) in a way reads
+never were: two calls interleaving on different threads corrupt each other's
+preconditions. `SwDispatcher.Run`/`Run<T>` is public — a consumer composing
+several of the write primitives above into one atomic step (e.g. select, then
+invoke, then probe) should wrap them in a single `Run` call so nothing else can
+interleave in the middle; calling `Run` again from inside that callback (or
+from inside another SwBridge call that already dispatches) is safe and runs
+inline rather than deadlocking.
+
 ## Design notes
 
 - **Lazy connection & reconnection** — `SwConnection` resolves the running instance on first call and detects a dead COM link (SolidWorks closed/restarted), re-attaching transparently.
