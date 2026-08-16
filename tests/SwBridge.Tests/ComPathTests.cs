@@ -23,6 +23,20 @@ public class ComPathTests
         public Middle Middle { get; } = new();
     }
 
+    // Regression for C1: a zero-argument method name used as a path segment
+    // must never be invoked while merely being resolved (e.g. "ExitApp",
+    // "EditDelete" reached via describe_com_members' free-form target path).
+    private sealed class DangerousRoot
+    {
+        public bool WasCalled { get; private set; }
+
+        public int ExitApp()
+        {
+            WasCalled = true;
+            return 0;
+        }
+    }
+
     [Fact]
     public void Resolve_EmptyPath_ReturnsRootItself()
     {
@@ -117,6 +131,17 @@ public class ComPathTests
         var result = ComPath.Resolve(root, "Middle..Child");
 
         Assert.False(result.Success);
+    }
+
+    [Fact]
+    public void Resolve_MethodNameSegment_FailsWithoutInvokingIt()
+    {
+        var root = new DangerousRoot();
+
+        var result = ComPath.Resolve(root, "ExitApp");
+
+        Assert.False(result.Success);
+        Assert.False(root.WasCalled, "ComPath must never invoke a method while resolving a path segment");
     }
 
     [Fact]

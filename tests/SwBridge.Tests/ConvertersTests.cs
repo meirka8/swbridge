@@ -5,12 +5,19 @@ namespace SwBridge.Tests;
 
 // ResultConverters reads members via ComPropertyReader/ComPropertyReader-style
 // reflection, which behaves the same for plain .NET objects as for COM RCWs,
-// so DTO conversion is fully testable with fakes, without SolidWorks. The one
-// thing these fakes cannot exercise is ComLifetime.Release actually releasing
-// an RCW (a plain object is a no-op for Marshal.ReleaseComObject, already
-// covered by ComLifetimeTests) — only that it is safe to call, which it is here too.
+// so DTO shape conversion is fully testable with fakes, without SolidWorks.
+// The H4 ownership-flag behavior specifically needs a real, disconnectable RCW
+// to prove anything (Marshal.ReleaseComObject is a no-op on a plain object), so
+// those tests use "Scripting.FileSystemObject" — a built-in Windows automation
+// object, distinct from SolidWorks — skipping gracefully if unavailable.
 public class ConvertersTests
 {
+    private static object? CreateFileSystemObject()
+    {
+        var type = Type.GetTypeFromProgID("Scripting.FileSystemObject");
+        return type == null ? null : Activator.CreateInstance(type);
+    }
+
     private sealed class FakeFeature
     {
         public string Name => "Boss-Extrude1";
@@ -114,5 +121,83 @@ public class ConvertersTests
 
         Assert.Equal(2, results.Count);
         Assert.All(results, r => Assert.Equal(7, r.Id));
+    }
+
+    // --- H4: ownership flag ------------------------------------------------
+
+    [Fact]
+    public void ToFeatureRef_OwnsReferenceFalse_LeavesSharedRcwUsableAfterward()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        try
+        {
+            // FileSystemObject has neither Name nor GetTypeName2, so conversion
+            // itself returns null — the point is what happens to fso regardless.
+            ResultConverters.ToFeatureRef(fso, ownsReference: false);
+
+            Assert.True(ComPropertyReader.TryGetProperty(fso, "Drives", out _),
+                "the shared RCW must still be usable when ownsReference is false");
+        }
+        finally
+        {
+            ComLifetime.Release(fso);
+        }
+    }
+
+    [Fact]
+    public void ToFeatureRef_OwnsReferenceTrueDefault_ReleasesRcwAfterward()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        ResultConverters.ToFeatureRef(fso); // default ownsReference: true
+
+        Assert.False(ComPropertyReader.TryGetProperty(fso, "Drives", out _),
+            "the RCW must be disconnected (and therefore unusable) once released");
+    }
+
+    [Fact]
+    public void ToSketchSegmentRef_OwnsReferenceFalse_LeavesSharedRcwUsableAfterward()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        try
+        {
+            ResultConverters.ToSketchSegmentRef(fso, ownsReference: false);
+
+            Assert.True(ComPropertyReader.TryGetProperty(fso, "Drives", out _),
+                "the shared RCW must still be usable when ownsReference is false");
+        }
+        finally
+        {
+            ComLifetime.Release(fso);
+        }
+    }
+
+    [Fact]
+    public void ToSketchSegmentRef_OwnsReferenceTrueDefault_ReleasesRcwAfterward()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        ResultConverters.ToSketchSegmentRef(fso); // default ownsReference: true
+
+        Assert.False(ComPropertyReader.TryGetProperty(fso, "Drives", out _),
+            "the RCW must be disconnected (and therefore unusable) once released");
     }
 }

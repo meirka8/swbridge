@@ -52,26 +52,40 @@ public static class ModelInspector
         foreach (var featureObject in features)
         {
             var swFeature = (Feature)featureObject;
-            var typeName = swFeature.GetTypeName2();
-
-            IReadOnlyDictionary<string, object?>? properties = null;
-            var specs = propertyLookup?.Invoke(typeName);
-            if (specs != null)
+            try
             {
-                var values = new Dictionary<string, object?>();
-                var definition = swFeature.GetDefinition();
-                foreach (var spec in specs)
+                var typeName = swFeature.GetTypeName2();
+
+                IReadOnlyDictionary<string, object?>? properties = null;
+                var specs = propertyLookup?.Invoke(typeName);
+                if (specs != null)
                 {
-                    var args = spec.Args is { Count: > 0 } ? spec.Args.ToArray() : null;
-                    if (ComPropertyReader.TryGetMember(definition, spec.Member, args, out var value))
+                    var definition = swFeature.GetDefinition();
+                    try
                     {
-                        values[spec.Name] = value;
+                        var values = new Dictionary<string, object?>();
+                        foreach (var spec in specs)
+                        {
+                            var args = spec.Args is { Count: > 0 } ? spec.Args.ToArray() : null;
+                            if (ComPropertyReader.TryGetMember(definition, spec.Member, args, out var value))
+                            {
+                                values[spec.Name] = value;
+                            }
+                        }
+                        properties = values;
+                    }
+                    finally
+                    {
+                        ComLifetime.Release(definition);
                     }
                 }
-                properties = values;
-            }
 
-            featureList.Add(new FeatureInfo(swFeature.Name, typeName, properties));
+                featureList.Add(new FeatureInfo(swFeature.Name, typeName, properties));
+            }
+            finally
+            {
+                ComLifetime.Release(swFeature);
+            }
         }
 
         return featureList;
@@ -122,14 +136,6 @@ public static class ModelInspector
             new Point3(box[0], box[1], box[2]),
             new Point3(box[3], box[4], box[5]));
     }
-
-    // Applied to interop-assembly candidate interfaces when the ITypeInfo path
-    // finds nothing for a feature definition; keeps the QueryInterface probe
-    // count in the low hundreds instead of scanning the whole interop assembly.
-    // Callers who want a full, unfiltered scan can call
-    // ComTypeInspector.DescribeMembersViaInterop directly.
-    private static bool IsFeatureDataInterface(Type type) =>
-        type.Name.Contains("FeatureData", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>
     /// Finds a feature by name (case-insensitive) and discovers the members its
@@ -185,7 +191,7 @@ public static class ModelInspector
                     var members = ComTypeInspector.DescribeMembers(definition);
                     return members.Count > 0
                         ? members
-                        : ComTypeInspector.DescribeMembersViaInterop(definition, IsFeatureDataInterface);
+                        : ComTypeInspector.DescribeMembersViaInterop(definition, ComTypeInspector.FeatureDataFilter);
                 }
                 finally
                 {

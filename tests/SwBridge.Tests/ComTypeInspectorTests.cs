@@ -122,4 +122,21 @@ public class ComTypeInspectorTests
         // Property accessor methods must not also show up as bare Method entries.
         Assert.DoesNotContain(members, m => m.Name.StartsWith("get_", StringComparison.Ordinal) || m.Name.StartsWith("set_", StringComparison.Ordinal));
     }
+
+    // M9: a reusable, filtered-by-default entry point so callers do not need to
+    // duplicate the "FeatureData" substring convention or reach for an
+    // unfiltered (dispatcher-blocking) scan by default.
+    [Fact]
+    public void FeatureDataFilter_MatchesInterfacesNamedFeatureData()
+    {
+        Assert.True(ComTypeInspector.FeatureDataFilter(typeof(IExtrudeFeatureData2)));
+        Assert.True(ComTypeInspector.FeatureDataFilter(typeof(IChamferFeatureData2)));
+    }
+
+    [Fact]
+    public void FeatureDataFilter_ExcludesNonFeatureDataInterfaces()
+    {
+        Assert.False(ComTypeInspector.FeatureDataFilter(typeof(IFeature)));
+        Assert.False(ComTypeInspector.FeatureDataFilter(typeof(ISldWorks)));
+    }
 }

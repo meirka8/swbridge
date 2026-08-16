@@ -14,7 +14,13 @@ namespace SwBridge;
 /// no dispatching itself — callers run these inside a <see cref="SwDispatcher.Run{T}(Func{T})"/>
 /// call, typically bracketing a write (per <c>ADR 0002</c>: "snapshots the
 /// relevant probes before the invoke and re-reads after, inside the same STA
-/// dispatch").
+/// dispatch"). Each probe releases the intermediate manager/sketch objects it
+/// reaches through the document along the way (<c>FeatureManager</c>,
+/// <c>SketchManager</c>, <c>ActiveSketch</c>, <c>SelectionManager</c>,
+/// <c>Extension</c>) — a write operation calls several of these per step
+/// (precondition + pre-snapshot + post-verify + result snapshot), and at
+/// MCP-session timescales the unreleased native references add up enough that
+/// SolidWorks may refuse to fully let go of a document after the user closes it.
 /// </remarks>
 public static class DocumentStateProbes
 {
@@ -24,8 +30,18 @@ public static class DocumentStateProbes
     /// </summary>
     /// <param name="doc">The document to read.</param>
     /// <param name="topLevelOnly">When true, counts only top-level features (excludes sub-features).</param>
-    public static int GetFeatureCount(ModelDoc2 doc, bool topLevelOnly = false) =>
-        doc.FeatureManager.GetFeatureCount(topLevelOnly);
+    public static int GetFeatureCount(ModelDoc2 doc, bool topLevelOnly = false)
+    {
+        var featureManager = doc.FeatureManager;
+        try
+        {
+            return featureManager.GetFeatureCount(topLevelOnly);
+        }
+        finally
+        {
+            ComLifetime.Release(featureManager);
+        }
+    }
 
     /// <summary>
     /// Whether the document currently has an active (being-edited) sketch. The
@@ -33,7 +49,26 @@ public static class DocumentStateProbes
     /// preconditions and <c>ADR 0002</c>'s <c>sketchModeIs(bool)</c> check.
     /// </summary>
     /// <param name="doc">The document to read.</param>
-    public static bool IsInSketchMode(ModelDoc2 doc) => doc.SketchManager.ActiveSketch != null;
+    public static bool IsInSketchMode(ModelDoc2 doc)
+    {
+        var sketchManager = doc.SketchManager;
+        try
+        {
+            var activeSketch = sketchManager.ActiveSketch;
+            try
+            {
+                return activeSketch != null;
+            }
+            finally
+            {
+                ComLifetime.Release(activeSketch);
+            }
+        }
+        finally
+        {
+            ComLifetime.Release(sketchManager);
+        }
+    }
 
     /// <summary>
     /// Number of segments in the active sketch, or 0 when there is none. The
@@ -42,13 +77,28 @@ public static class DocumentStateProbes
     /// <param name="doc">The document to read.</param>
     public static int GetSketchSegmentCount(ModelDoc2 doc)
     {
-        var sketch = doc.SketchManager.ActiveSketch;
-        if (sketch == null)
+        var sketchManager = doc.SketchManager;
+        try
         {
-            return 0;
-        }
+            var sketch = sketchManager.ActiveSketch;
+            if (sketch == null)
+            {
+                return 0;
+            }
 
-        return sketch.GetSketchSegments() is object[] segments ? segments.Length : 0;
+            try
+            {
+                return sketch.GetSketchSegments() is object[] segments ? segments.Length : 0;
+            }
+            finally
+            {
+                ComLifetime.Release(sketch);
+            }
+        }
+        finally
+        {
+            ComLifetime.Release(sketchManager);
+        }
     }
 
     /// <summary>
@@ -56,8 +106,18 @@ public static class DocumentStateProbes
     /// probe behind <c>ADR 0001</c>'s <c>selectionCount(min, max)</c> precondition.
     /// </summary>
     /// <param name="doc">The document to read.</param>
-    public static int GetSelectionCount(ModelDoc2 doc) =>
-        doc.SelectionManager is SelectionMgr manager ? manager.GetSelectedObjectCount2(-1) : 0;
+    public static int GetSelectionCount(ModelDoc2 doc)
+    {
+        var selectionManager = doc.SelectionManager;
+        try
+        {
+            return selectionManager is SelectionMgr manager ? manager.GetSelectedObjectCount2(-1) : 0;
+        }
+        finally
+        {
+            ComLifetime.Release(selectionManager);
+        }
+    }
 
     /// <summary>
     /// Whether the document has pending changes that have not been rebuilt yet
@@ -67,7 +127,18 @@ public static class DocumentStateProbes
     /// see <see cref="RebuildSucceeded"/>.
     /// </summary>
     /// <param name="doc">The document to read.</param>
-    public static bool NeedsRebuild(ModelDoc2 doc) => doc.Extension.NeedsRebuild2 != 0;
+    public static bool NeedsRebuild(ModelDoc2 doc)
+    {
+        var extension = doc.Extension;
+        try
+        {
+            return extension.NeedsRebuild2 != 0;
+        }
+        finally
+        {
+            ComLifetime.Release(extension);
+        }
+    }
 
     /// <summary>
     /// Forces a rebuild (<c>IModelDoc2.EditRebuild3</c>) and reports whether it

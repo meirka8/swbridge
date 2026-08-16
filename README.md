@@ -23,7 +23,8 @@ var documents = new DocumentManager(connection);
 foreach (var info in documents.ListOpenDocuments())
     Console.WriteLine($"{info.Title} ({info.Type}) {info.Path}");
 
-// Resolve a document by title, file name, or path
+// Resolve a document by title, file name, or path. Throws SwBridgeException if
+// the name matches more than one open document — see Design notes below.
 var doc = documents.Resolve("Part2.SLDPRT") ?? documents.GetActiveDocument();
 
 // Read the feature tree; you decide which members matter per feature type.
@@ -102,10 +103,19 @@ var sketchManager = ComPath.Resolve(doc.Model, "SketchManager").Value;
 ComInvoker.InvokeMethod(sketchManager, "InsertSketch", new object?[] { true });
 
 var circle = ComInvoker.InvokeMethod(sketchManager, "CreateCircleByRadius", new object?[] { 0.0, 0.0, 0.0, 0.01 });
-var segmentRef = ResultConverters.ToSketchSegmentRef(circle.Value); // {Id, SegmentType} — the live ISketchSegment is released here
+var segmentRef = ResultConverters.ToSketchSegmentRef(circle.Value); // {Id, SegmentType} — the live ISketchSegment is released here (fresh return value, the default ownsReference: true is correct)
 
 var segmentCountBefore = DocumentStateProbes.GetSketchSegmentCount(doc.Model);
 ```
+
+> **Ownership matters for converters.** `ToFeatureRef`/`ToSketchSegmentRef` default
+> to releasing the object you pass in (`ownsReference: true`) — correct for a
+> fresh return value like `circle.Value` above. Pass `ownsReference: false` for
+> anything you resolved rather than just created — e.g. a `ComPath` hop that
+> happens to land on `Extension.Document`, which is the *same COM identity* as
+> `doc.Model`: converting it with the default would disconnect the document
+> handle you (and every other `SwDocument` wrapping it) still need, for the rest
+> of that RCW's lifetime. SwBridge cannot infer ownership from the object itself.
 
 > Verified live: a `null` argument for a COM-interface-typed parameter (e.g.
 > `SelectByID2`'s `Callout`) needs `new DispatchWrapper(null)`, not a bare `null`
@@ -119,16 +129,28 @@ var segmentCountBefore = DocumentStateProbes.GetSketchSegmentCount(doc.Model);
   deliberately-combined read-only flags. Every call returns a typed `InvokeOutcome`
   (`Success`, `Value`, `FailureDetail`) instead of throwing for a member-level failure,
   because SolidWorks' write API reports most failures as `Nothing`/`False`, not exceptions.
-- **`ComPath`** resolves an open, dotted, read-only property path (`"Extension.SelectionManager"`)
-  from an application or document root — the same reflection `ComPropertyReader`
-  uses, one hop per segment — so a target does not need a closed enum of known
-  managers; a bad path is a runtime `ComPathResult` failure, not a compile-time one.
-- **`ResultConverters`** turn a live COM return (a feature, a sketch segment) into a
-  plain, serializable DTO (`FeatureRef`, `SketchSegmentRef`) and release the RCW on
-  the way out — a live interface pointer should never survive past the call that produced it.
+- **`ComPath`** resolves an open, dotted, *strictly read-only* property path
+  (`"Extension.SelectionManager"`) from an application or document root, one hop
+  per segment — via a dedicated `DISPATCH_PROPERTYGET`-only reader
+  (`ComPropertyReader.TryGetPropertyStrict`), never `ComPropertyReader`'s
+  combined `GetProperty | InvokeMethod` flags used by the feature-definition read
+  path. That distinction is load-bearing, not stylistic: with the combined flags,
+  a path segment that happened to name a zero-argument COM method (`ExitApp`,
+  `EditDelete`, …) would be silently *invoked* while merely being resolved. A
+  target does not need a closed enum of known managers; a bad path is a runtime
+  `ComPathResult` failure, not a compile-time one.
+- **`ResultConverters`** turn a live COM return (a feature, a sketch segment) into
+  a plain, serializable DTO (`FeatureRef`, `SketchSegmentRef`). Each takes an
+  `ownsReference` flag (default `true`) that decides whether the RCW is released
+  after conversion — see the ownership note above; getting this wrong
+  (`Marshal.ReleaseComObject` on an object something else still holds) permanently
+  disconnects that RCW for every other holder, not just the converter's caller.
 - **`DocumentStateProbes`** are the cheap, targeted reads (feature count, sketch mode,
   sketch segment count, selection count, rebuild state) a caller uses to check a write
   actually did something, since SolidWorks' return values alone are not trustworthy.
+  Every intermediate COM object each probe reaches through (`FeatureManager`,
+  `SketchManager`, `ActiveSketch`, `SelectionManager`, `Extension`) is released
+  before the probe returns.
 - **`SwDispatcher`** (see below) is what makes composing these safe: everything above
   runs on one dedicated STA thread per `SwConnection`, so a write step and a read
   step never interleave.
@@ -152,13 +174,35 @@ interleave in the middle; calling `Run` again from inside that callback (or
 from inside another SwBridge call that already dispatches) is safe and runs
 inline rather than deadlocking.
 
+The dispatcher's STA thread pumps Windows messages while idle (`PeekMessage`/
+`TranslateMessage`/`DispatchMessage`, polled every ~10ms between work-queue
+checks — a bounded wait each cycle, not a busy-spin). An STA apartment that
+never pumps cannot service a COM call marshalled back into it from another
+thread; without the pump, any RCW that ever leaked off the dispatcher and was
+then touched from elsewhere would hang that other thread forever, and because
+the dispatcher itself never services anything else meanwhile, every other
+queued `Run` call would be wedged behind it too.
+
+`Run` also takes a timeout — `DefaultTimeout` (120 seconds) unless a call
+passes its own. SolidWorks can genuinely block a COM call indefinitely (a
+modal rebuild-error dialog, a missing-reference prompt, a licence check), and
+without a bound, that wedges the dispatcher exactly as above. On timeout, `Run`
+throws `SwDispatchTimeoutException` on the *calling* thread; the unit of work
+itself keeps running on the dispatcher (there is no safe way to abort an
+in-flight COM call) and every call still queued behind it keeps waiting until
+it finishes. `Dispose()` mirrors this: it joins the thread with a bounded
+timeout (`DefaultDisposeTimeout`, 5 seconds) rather than indefinitely, so a
+wedged call cannot hang process shutdown either; check `IsFullyStopped`
+afterward if you need to know whether the join actually completed.
+
 ## Design notes
 
-- **Lazy connection & reconnection** — `SwConnection` resolves the running instance on first call and detects a dead COM link (SolidWorks closed/restarted), re-attaching transparently.
+- **Lazy connection & reconnection** — `SwConnection` resolves the running instance on first call and detects a dead COM link (SolidWorks closed/restarted, or a disconnected RCW — `InvalidComObjectException` included), re-attaching transparently.
+- **Ambiguous name resolution is a reportable error, not a coin flip** — `DocumentManager.Resolve` throws `SwBridgeException` when a name matches more than one open document (e.g. an unsaved scratch `Part2` and a saved `Part2.SLDPRT`) instead of silently returning whichever `ISldWorks.GetDocuments()` happened to enumerate first. This follows the write side's error philosophy ("worst case you modify the wrong customer's part") rather than the read side's ("worst case you read the wrong thing"), because a resolved document feeds both.
 - **Schema-as-data feature reading** — `ModelInspector.GetFeatures` takes a `Func<string, IReadOnlyList<string>?>` so the set of understood feature types is the caller's data, not this library's code.
 - **No console output** — the library never writes to stdout/stderr; failures surface as return values or typed exceptions (`SwNotRunningException`, `SwBridgeException`).
 - **Errors as absence** — an unreadable feature property is reported as absent rather than throwing; COM property probing is inherently best-effort.
-- **Discovery, not guessing** — `ComTypeInspector` reads a late-bound COM object's real member list from its type information, so schema entries can be found rather than assumed.
+- **Discovery, not guessing** — `ComTypeInspector` reads a late-bound COM object's real member list from its type information, so schema entries can be found rather than assumed. `ComTypeInspector.FeatureDataFilter` is a ready-made, filtered-by-default predicate for the interop-assembly fallback — an unfiltered probe costs a QueryInterface per interface in the whole interop assembly (a few thousand) and, since it does no dispatching of its own, blocks the shared dispatcher for its entire duration if run inside a `Run` call.
 
 ## Building
 

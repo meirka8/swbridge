@@ -332,6 +332,21 @@ public static class ComTypeInspector
         return name;
     }
 
+    /// <summary>
+    /// A ready-made, filtered-by-default entry point for the common case: narrows
+    /// <see cref="FindImplementedInteropInterfaces"/>/<see cref="DescribeMembersViaInterop"/>
+    /// to interfaces whose name contains <c>"FeatureData"</c> — the convention
+    /// SolidWorks' interop assembly uses for feature-definition interfaces
+    /// (<c>IExtrudeFeatureData2</c>, <c>IChamferFeatureData2</c>, …). This cuts an
+    /// unfiltered probe of a few thousand interfaces down to about a hundred, and
+    /// is exactly what <see cref="ModelInspector.DescribeFeatureDefinition"/> uses
+    /// internally. Pass this explicitly for any target that is plausibly a
+    /// feature definition instead of duplicating the substring match or reaching
+    /// for an unfiltered call — see the cost warning on <see cref="FindImplementedInteropInterfaces"/>.
+    /// </summary>
+    public static bool FeatureDataFilter(Type type) =>
+        type.Name.Contains("FeatureData", StringComparison.OrdinalIgnoreCase);
+
     // Lazily enumerated once per process: every public [ComImport] interface
     // declared in the SolidWorks interop assembly. There are a few thousand of
     // these; building the list is the expensive part, not testing any one of
@@ -354,11 +369,18 @@ public static class ComTypeInspector
     /// <param name="filter">
     /// Optional predicate over candidate interface <see cref="Type"/>s, applied
     /// before probing. The interop assembly declares several thousand interfaces;
-    /// an unfiltered call probes all of them with a QueryInterface each — fine
-    /// for an explicit, occasional discovery call, but callers with a good guess
-    /// at the interface family (e.g. interface name containing <c>"FeatureData"</c>)
-    /// should filter to keep the probe count small and targeted. Callers can
-    /// always call this unfiltered themselves for a full scan.
+    /// an unfiltered call (<c>filter: null</c>) probes all of them with a
+    /// QueryInterface each. Each of those is a cross-process round trip to the
+    /// SolidWorks executable, and — critically — this method does no dispatching
+    /// of its own, so if a caller runs it inside a <see cref="SwDispatcher.Run{T}(Func{T})"/>
+    /// call (as any COM-touching code must, per <c>ADR 0003</c>), an unfiltered
+    /// probe monopolizes the dispatcher's single STA thread for its entire
+    /// duration: every other queued operation against that SolidWorks session —
+    /// reads and writes alike — waits behind it. Use <see cref="FeatureDataFilter"/>
+    /// when the target is plausibly a feature definition (the common case), or
+    /// supply a narrower predicate when more is known about the target; reach
+    /// for an unfiltered call only for an occasional, deliberate, full discovery
+    /// scan, not as a default.
     /// </param>
     public static IReadOnlyList<Type> FindImplementedInteropInterfaces(object? comObject, Func<Type, bool>? filter = null)
     {

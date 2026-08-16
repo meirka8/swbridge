@@ -1,3 +1,4 @@
+using System.Linq;
 using SolidWorks.Interop.sldworks;
 using SolidWorks.Interop.swconst;
 
@@ -79,10 +80,24 @@ public sealed class DocumentManager
     /// title, the file name with or without extension, or the full path.
     /// Returns null when nothing matches.
     /// </summary>
+    /// <remarks>
+    /// Throws rather than silently picking a match when <paramref name="documentName"/>
+    /// matches more than one open document — e.g. an unsaved scratch <c>Part2</c>
+    /// (from <see cref="NewPart"/>) alongside a saved <c>Part2.SLDPRT</c>, where
+    /// <c>"Part2"</c> matches the first by title and the second by file name.
+    /// This follows the write side's error philosophy over the read side's ("worst
+    /// case you read the wrong thing" vs. "worst case you modify the wrong
+    /// customer's part" — see <c>ADR 0001</c> §3): an ambiguous read-only lookup
+    /// silently returning whichever document <c>ISldWorks.GetDocuments()</c>
+    /// happened to enumerate first is exactly the kind of wrong-document risk
+    /// that requires a definite, reportable error instead of a guess.
+    /// </remarks>
     /// <exception cref="SwNotRunningException"/>
+    /// <exception cref="SwBridgeException"><paramref name="documentName"/> matches more than one open document.</exception>
     public SwDocument? Resolve(string documentName) =>
         _connection.Dispatcher.Run(() =>
         {
+            var matches = new List<SwDocument>();
             foreach (var doc in GetOpenDocumentsUnsynchronized())
             {
                 var info = doc.Info;
@@ -92,10 +107,18 @@ public sealed class DocumentManager
                     Matches(documentName, System.IO.Path.GetFileNameWithoutExtension(info.Title)) ||
                     Matches(documentName, System.IO.Path.GetFileNameWithoutExtension(info.Path)))
                 {
-                    return doc;
+                    matches.Add(doc);
                 }
             }
-            return null;
+
+            return matches.Count switch
+            {
+                0 => null,
+                1 => matches[0],
+                _ => throw new SwBridgeException(
+                    $"'{documentName}' is ambiguous — it matches {matches.Count} open documents: " +
+                    $"{string.Join(", ", matches.Select(m => m.Info.Title))}. Use the exact title or full path to disambiguate."),
+            };
         });
 
     /// <summary>

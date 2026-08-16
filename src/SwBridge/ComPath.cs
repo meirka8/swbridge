@@ -31,12 +31,17 @@ public sealed record ComPathResult(bool Success, object? Value, string? FailedSe
 /// can be addressed by path.
 /// </summary>
 /// <remarks>
-/// Every hop is a property <em>get</em>, performed via <see cref="ComPropertyReader"/>
-/// — the same read-only reflection the rest of SwBridge uses. <see cref="ComPath"/>
-/// never invokes a method or writes a property; that happens once, on the
-/// resolved terminal object, through <see cref="ComInvoker"/>. Intermediate hops
-/// (e.g. the <c>FeatureManager</c> object reached on the way to a deeper path)
-/// are not individually released, matching the rest of this library's existing
+/// Every hop is a <em>strict</em> property get — <c>DISPATCH_PROPERTYGET</c> only,
+/// via <see cref="ComPropertyReader.TryGetPropertyStrict"/> — never the combined
+/// <c>GetProperty | InvokeMethod</c> flags <see cref="ComPropertyReader.TryGetMember"/>
+/// uses for the feature-definition read path, where accessor methods are
+/// legitimately needed. A path segment that happens to name a zero-argument
+/// method (e.g. <c>ExitApp</c>, <c>EditDelete</c>) fails to resolve rather than
+/// being invoked while merely being walked — <see cref="ComPath"/> genuinely
+/// cannot execute anything; that happens once, on the resolved terminal object,
+/// through <see cref="ComInvoker"/>. Intermediate hops (e.g. the
+/// <c>FeatureManager</c> object reached on the way to a deeper path) are not
+/// individually released, matching the rest of this library's existing
 /// convention for property-get results (see <see cref="ModelInspector"/>);
 /// releasing whatever the full path resolves to is the caller's responsibility,
 /// typically via a result converter.
@@ -80,9 +85,11 @@ public static class ComPath
                 return ComPathResult.Fail(walkedSoFar, "Empty path segment.");
             }
 
-            if (!ComPropertyReader.TryGetProperty(current, segment, out var next))
+            if (!ComPropertyReader.TryGetPropertyStrict(current, segment, out var next))
             {
-                return ComPathResult.Fail(walkedSoFar, $"'{segment}' is not a readable property on the current object.");
+                return ComPathResult.Fail(walkedSoFar,
+                    $"'{segment}' is not a readable property on the current object. " +
+                    "Path segments must be properties; methods are only invocable as the terminal member, via ComInvoker.");
             }
 
             if (next == null)

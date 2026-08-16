@@ -124,4 +124,92 @@ public class SwDispatcherTests
         Assert.Throws<ArgumentNullException>(() => dispatcher.Run((Func<int>)null!));
         Assert.Throws<ArgumentNullException>(() => dispatcher.Run((Action)null!));
     }
+
+    [Fact]
+    public void DefaultTimeout_IsGenerous()
+    {
+        // ADR 0003 asks for "generous" without naming a value; pin a floor so a
+        // future edit cannot quietly shrink it to something that fires on a
+        // legitimately long rebuild.
+        Assert.True(SwDispatcher.DefaultTimeout >= TimeSpan.FromSeconds(60));
+    }
+
+    [Fact]
+    public void Run_TimesOut_ThrowsSwDispatchTimeoutExceptionReportingTheTimeout()
+    {
+        using var dispatcher = new SwDispatcher();
+        var timeout = TimeSpan.FromMilliseconds(50);
+
+        var ex = Assert.Throws<SwDispatchTimeoutException>(() =>
+            dispatcher.Run(() =>
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(500));
+                return 1;
+            }, timeout));
+
+        Assert.Equal(timeout, ex.Timeout);
+    }
+
+    [Fact]
+    public void Run_TimesOut_DispatcherStillWorksAfterTheSlowCallFinishes()
+    {
+        using var dispatcher = new SwDispatcher();
+
+        Assert.Throws<SwDispatchTimeoutException>(() =>
+            dispatcher.Run(() =>
+            {
+                Thread.Sleep(TimeSpan.FromMilliseconds(300));
+                return 1;
+            }, TimeSpan.FromMilliseconds(20)));
+
+        // The queue is still occupied by the slow call for up to ~300ms; a
+        // generous default timeout means this ordinary call just waits its
+        // turn instead of throwing, and the dispatcher keeps working afterward.
+        var result = dispatcher.Run(() => 42);
+
+        Assert.Equal(42, result);
+    }
+
+    [Fact]
+    public void Dispose_BoundedJoin_ReturnsPromptlyWhenWorkIsStillRunning_AndReportsNotFullyStopped()
+    {
+        var dispatcher = new SwDispatcher();
+        var started = new ManualResetEventSlim(false);
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                dispatcher.Run(() =>
+                {
+                    started.Set();
+                    Thread.Sleep(TimeSpan.FromSeconds(2));
+                    return 1;
+                });
+            }
+            catch (SwDispatchTimeoutException)
+            {
+                // Possible depending on timing relative to the default timeout; irrelevant here.
+            }
+        });
+        Assert.True(started.Wait(TimeSpan.FromSeconds(2)), "background work never started");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        dispatcher.Dispose(TimeSpan.FromMilliseconds(50));
+        stopwatch.Stop();
+
+        Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(1), $"Dispose(joinTimeout) blocked for {stopwatch.Elapsed}");
+        Assert.False(dispatcher.IsFullyStopped);
+    }
+
+    [Fact]
+    public void Dispose_WhenIdle_JoinsWithinBoundAndReportsFullyStopped()
+    {
+        var dispatcher = new SwDispatcher();
+        dispatcher.Run(() => 1); // ensure the thread is up and idle, not mid-startup
+
+        dispatcher.Dispose();
+
+        Assert.True(dispatcher.IsFullyStopped);
+    }
 }

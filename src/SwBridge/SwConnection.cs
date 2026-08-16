@@ -64,6 +64,16 @@ public sealed class SwConnection : IDisposable
     /// <summary>Disposes <see cref="Dispatcher"/>. Safe to call once no further calls are in flight.</summary>
     public void Dispose() => Dispatcher.Dispose();
 
+    // Catches InvalidComObjectException alongside COMException/InvalidCastException:
+    // a disconnected RCW (e.g. Marshal.ReleaseComObject drove its refcount to
+    // zero — see ResultConverters' ownsReference remarks) throws that type,
+    // which derives from SystemException, not COMException. Missing it here
+    // used to mean the one mechanism that exists to recover from a dead COM
+    // link (re-attaching) could not recover from this particular way of being
+    // dead — the exception escaped IsAlive/TryGetApp/the dispatch entirely and
+    // the connection stayed permanently broken. TryGetApp's caller (above)
+    // already reassigns _app unconditionally when this returns false, so no
+    // explicit null-out is needed here.
     private static bool IsAlive(ISldWorks app)
     {
         try
@@ -71,11 +81,7 @@ public sealed class SwConnection : IDisposable
             _ = app.Visible;
             return true;
         }
-        catch (COMException)
-        {
-            return false;
-        }
-        catch (InvalidCastException)
+        catch (Exception ex) when (ex is COMException or InvalidCastException or InvalidComObjectException)
         {
             return false;
         }
