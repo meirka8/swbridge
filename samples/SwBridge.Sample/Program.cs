@@ -5,15 +5,28 @@
 // By default this sample is entirely read-only. Pass --new-part to also run
 // the write-side demo (SwDispatcher/DocumentManager.NewPart/ComPath/ComInvoker/
 // DocumentStateProbes/ResultConverters) — it creates a scratch part, sketches
-// and closes it again, and touches nothing else open in the session.
+// and closes it again, and touches nothing else open in the session. Pass
+// --selection-demo to run the SelectionInspector demo (also a scratch part).
+// Pass --document-discovery to run ComTypeInspector.DescribeAllMembers against
+// the active document's root (read-only, but an unfiltered interop probe —
+// off by default to keep an ordinary run fast).
 using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using SolidWorks.Interop.sldworks;
+using SolidWorks.Interop.swconst;
 using SwBridge;
 
-var runNewPartDemo = args.Any(a => string.Equals(a, "--new-part", StringComparison.OrdinalIgnoreCase));
-var positionalArgs = args.Where(a => !string.Equals(a, "--new-part", StringComparison.OrdinalIgnoreCase)).ToArray();
+bool HasFlag(string flag) => args.Any(a => string.Equals(a, flag, StringComparison.OrdinalIgnoreCase));
+
+var runNewPartDemo = HasFlag("--new-part");
+var runSelectionDemo = HasFlag("--selection-demo");
+var runDocumentDiscovery = HasFlag("--document-discovery");
+var positionalArgs = args
+    .Where(a => !a.Equals("--new-part", StringComparison.OrdinalIgnoreCase) &&
+                !a.Equals("--selection-demo", StringComparison.OrdinalIgnoreCase) &&
+                !a.Equals("--document-discovery", StringComparison.OrdinalIgnoreCase))
+    .ToArray();
 
 var connection = new SwConnection();
 var documents = new DocumentManager(connection);
@@ -118,6 +131,44 @@ else
 }
 
 // ---------------------------------------------------------------------------
+// Document-root discovery demo (opt-in via --document-discovery): the gap the
+// UAT report found — describe_com_members on a document root sees only the
+// ~175 members its IProvideClassInfo/coclass default interface declares
+// (ComTypeInspector.DescribeMembers), and misses IModelDoc2 members like
+// EditRebuild3/SaveAs3/EditUndo2/ClearSelection2 entirely, because those are
+// not on that default interface. DescribeAllMembers unions that with the
+// interop-assembly probe, which finds them immediately (IModelDoc2 is just
+// another interface the live object answers a QueryInterface for).
+// Read-only; off by default only because the unfiltered probe here queries
+// the whole interop assembly and is not fast.
+// ---------------------------------------------------------------------------
+if (runDocumentDiscovery)
+{
+    Console.WriteLine("\n=== --document-discovery demo (ComTypeInspector.DescribeAllMembers) ===");
+
+    // Targets Part2 specifically (not whatever happens to be "active" — the
+    // SolidWorks session may be shared with another process/agent) so this
+    // demo is deterministic regardless of what else is going on in the window.
+    var discoveryDoc = documents.Resolve("Part2.SLDPRT") ?? active;
+    Console.WriteLine($"Discovery target: {discoveryDoc.Info.Title}");
+
+    var viaTypeInfoOnly = ComTypeInspector.DescribeMembers(discoveryDoc.Model);
+    Console.WriteLine($"DescribeMembers (ITypeInfo/IProvideClassInfo only) member count: {viaTypeInfoOnly.Count}");
+
+    var all = ComTypeInspector.DescribeAllMembers(discoveryDoc.Model);
+    Console.WriteLine($"DescribeAllMembers (union with unfiltered interop probe) member count: {all.Count}");
+
+    string[] previouslyInvisible = { "EditRebuild3", "SaveAs3", "EditUndo2", "ClearSelection2" };
+    var found = previouslyInvisible
+        .Select(name => all.FirstOrDefault(m => string.Equals(m.Name, name, StringComparison.OrdinalIgnoreCase)))
+        .Where(m => m != null)
+        .ToList();
+
+    Console.WriteLine($"Previously-invisible members found ({found.Count}/{previouslyInvisible.Length}):");
+    Console.WriteLine(JsonSerializer.Serialize(found, json));
+}
+
+// ---------------------------------------------------------------------------
 // Write-side demo (opt-in via --new-part): DocumentManager.NewPart, then a
 // sketch/circle/exit round trip driven entirely through ComPath (dotted,
 // read-only target resolution) + ComInvoker (single-flag write dispatch) +
@@ -169,6 +220,67 @@ if (runNewPartDemo)
         Console.WriteLine($"InsertSketch(true) [exit] via ComInvoker -> Success={exitOutcome.Success} Detail={exitOutcome.FailureDetail}");
         Console.WriteLine($"In sketch mode after exit: {DocumentStateProbes.IsInSketchMode(doc)}");
         Console.WriteLine($"Feature count after: {DocumentStateProbes.GetFeatureCount(doc)}");
+    }
+    finally
+    {
+        var app = connection.GetApp();
+        app.CloseDoc(scratchTitle);
+        Console.WriteLine($"Closed scratch document '{scratchTitle}'. Session otherwise untouched.");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Selection-identity demo (opt-in via --selection-demo): SelectionInspector.
+// Builds a scratch box, picks one vertical edge via Extension.SelectByRay (the
+// reliable, view-independent pick — docs/uat-ladder-report.md's remediation
+// for the wrong-edge gap), and prints what SelectionInspector reports was
+// actually selected. This is the mechanism that closes the "silent
+// wrong-edge" failure: a caller compares the printed descriptor against what
+// it meant to pick, instead of trusting selectionCount alone.
+// ---------------------------------------------------------------------------
+if (runSelectionDemo)
+{
+    Console.WriteLine("\n=== --selection-demo (selection identity readback) ===");
+
+    var scratch = documents.NewPart();
+    var scratchTitle = scratch.Info.Title;
+    Console.WriteLine($"Created scratch part: {scratchTitle}");
+    var doc = scratch.Model;
+
+    try
+    {
+        const double half = 0.05;  // 100 mm square box
+        const double depth = 0.02; // 20 mm tall
+
+        doc.Extension.SelectByID2("Front Plane", "PLANE", 0, 0, 0, false, 0, null, 0);
+        doc.SketchManager.InsertSketch(true);
+        doc.SketchManager.CreateCornerRectangle(-half, -half, 0, half, half, 0);
+        doc.SketchManager.InsertSketch(true);
+        var boss = doc.FeatureManager.FeatureExtrusion3(true, false, false,
+            (int)swEndConditions_e.swEndCondBlind, 0, depth, 0,
+            false, false, false, false, 0, 0,
+            false, false, false, false, true, true, true,
+            (int)swStartConditions_e.swStartSketchPlane, 0, false);
+        Console.WriteLine($"Built scratch box: {(boss == null ? "FAILED" : "OK")}, feature count={DocumentStateProbes.GetFeatureCount(doc)}");
+
+        // Aim diagonally inward at the (+half, +half) vertical corner edge,
+        // from just outside it, at mid-height — side-on and close, per the
+        // UAT report's tolerance note (a ray fired from further away along the
+        // same line can pick a neighbouring edge instead).
+        doc.ClearSelection2(true);
+        var picked = doc.Extension.SelectByRay(
+            half + 0.01, half + 0.01, depth / 2,
+            -1.0, -1.0, 0.0,
+            0.001, (int)swSelectType_e.swSelEDGES, false, 0, 0);
+        Console.WriteLine($"SelectByRay -> {picked}, selection count={DocumentStateProbes.GetSelectionCount(doc)}");
+
+        var selection = SelectionInspector.GetSelection(doc);
+        Console.WriteLine("SelectionInspector.GetSelection:");
+        Console.WriteLine(JsonSerializer.Serialize(selection, json));
+
+        // Ground truth for the transcript: the picked edge should be a 20 mm
+        // vertical edge at the (0.05, 0.05, *) corner, i.e. midpoint near
+        // (0.05, 0.05, 0.01) m and length near 0.02 m.
     }
     finally
     {

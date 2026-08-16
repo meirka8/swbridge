@@ -83,6 +83,29 @@ An empty result from `DescribeMembers` alone means "not introspectable via
 `ITypeInfo`," not necessarily "no members" — try `DescribeMembersViaInterop`
 next. Neither mechanism throws for objects it can't handle.
 
+**These two do not always find the same members on the same object.** A
+document root (a live `ModelDoc2`/`PartDoc`) answers `DescribeMembers` with a
+real, non-empty list — its coclass's default interface, found via
+`IProvideClassInfo` — but that default interface does not include everything
+else the object implements. Concretely, it does not include `IModelDoc2`
+members like `EditRebuild3`, `SaveAs3`, `EditUndo2` or `ClearSelection2`,
+which `DescribeMembersViaInterop` finds immediately (`IModelDoc2` is just
+another `[ComImport]` interface the same object answers a QueryInterface for).
+Use `ComTypeInspector.DescribeAllMembers(comObject, interopFilter?)` for the
+union of both, deduplicated by `(Name, Kind, ParamCount)`, when you need the
+full picture rather than whichever mechanism happens to answer first:
+
+```csharp
+var everything = ComTypeInspector.DescribeAllMembers(doc.Model);
+// finds EditRebuild3/SaveAs3/EditUndo2/ClearSelection2 on a document root,
+// which DescribeMembers alone does not.
+```
+
+`interopFilter` defaults to `null` (unfiltered) — this method takes no
+position on the completeness/cost tradeoff described above; pass
+`ComTypeInspector.FeatureDataFilter` or your own predicate when you don't need
+a full scan of the interop assembly.
+
 ## Writing to SolidWorks
 
 Everything above is read-only and forgiving: an unreadable property is just
@@ -160,6 +183,49 @@ returns "absent"), write failures are surfaced (`ComInvoker` returns a typed out
 you must check). Treating an unchecked `InvokeOutcome` as success is exactly the mistake
 this shape exists to make hard to make silently.
 
+## Selection identity
+
+A selection-driven write (a fillet, a chamfer, a draft) can succeed against
+the *wrong* edge or face with no COM error at all — `selectionCount` tells you
+*how many* things are selected, never *what*. `SelectionInspector.GetSelection`
+closes that gap:
+
+```csharp
+var selection = SelectionInspector.GetSelection(doc.Model);
+foreach (var s in selection)
+    Console.WriteLine($"{s.Type}: {s.Descriptor}");
+// swSelEDGES: Line edge, length=0.02 m, midpoint=(0.05, 0.05, 0.01) m
+```
+
+Each `SelectionInfo` carries the `swSelectType_e` name (`Type`) and a
+best-effort, human-meaningful `Descriptor` — enough to tell *which* edge/face
+this is from a transcript alone, without ever handing back the live COM
+object:
+
+- **Edges** — curve kind (`Line`/`Circle`/`Ellipse`/`BCurve`/`Curve`) plus
+  chord length and chord midpoint from the edge's start/end vertices. Exact
+  for a straight edge; a chord approximation (not the true arc length) for a
+  curved one — still enough to identify which edge it is. Verified live
+  against a known 20 mm box edge: `length=0.02 m, midpoint=(0.05, 0.05, 0.01) m`,
+  matching ground truth exactly.
+  (Deliberately *not* `IEdge.GetCurveParams2()` + `ICurve.GetLength2`/`Evaluate2`,
+  despite that looking like the obvious API: verified live that
+  `GetCurveParams2()`'s returned array is not the simple start/end-parameter
+  pair its name suggests, and feeding it to `GetLength2`/`Evaluate2` produced
+  nonsense — a negative length, a midpoint off the edge. Vertices were the
+  mechanism that actually worked.)
+- **Faces** — surface kind (`Planar`/`Cylindrical`/`Conical`/`Spherical`/`Toroidal`/`Surface`)
+  plus area and an approximate center (the bounding-box midpoint).
+- **Vertices** — the point.
+- **Named entities** (features, planes, sketches, …) — the name.
+- Anything else: `Type` only, `Descriptor` null — never a reason to fail the read.
+
+Every intermediate COM object (the selection manager, the curve/surface/vertex
+objects read off each selected entity) is released before returning; nothing
+here ever hands back a live reference, and a description failure never fails
+the whole read — the read itself is a safety mechanism and must not become one
+more thing to work around.
+
 ## The dispatcher
 
 `SwConnection` owns a dedicated STA thread (`SwDispatcher`) that every COM touch
@@ -202,7 +268,8 @@ afterward if you need to know whether the join actually completed.
 - **Schema-as-data feature reading** — `ModelInspector.GetFeatures` takes a `Func<string, IReadOnlyList<string>?>` so the set of understood feature types is the caller's data, not this library's code.
 - **No console output** — the library never writes to stdout/stderr; failures surface as return values or typed exceptions (`SwNotRunningException`, `SwBridgeException`).
 - **Errors as absence** — an unreadable feature property is reported as absent rather than throwing; COM property probing is inherently best-effort.
-- **Discovery, not guessing** — `ComTypeInspector` reads a late-bound COM object's real member list from its type information, so schema entries can be found rather than assumed. `ComTypeInspector.FeatureDataFilter` is a ready-made, filtered-by-default predicate for the interop-assembly fallback — an unfiltered probe costs a QueryInterface per interface in the whole interop assembly (a few thousand) and, since it does no dispatching of its own, blocks the shared dispatcher for its entire duration if run inside a `Run` call.
+- **Discovery, not guessing** — `ComTypeInspector` reads a late-bound COM object's real member list from its type information, so schema entries can be found rather than assumed. `ComTypeInspector.FeatureDataFilter` is a ready-made, filtered-by-default predicate for the interop-assembly fallback — an unfiltered probe costs a QueryInterface per interface in the whole interop assembly (a few thousand) and, since it does no dispatching of its own, blocks the shared dispatcher for its entire duration if run inside a `Run` call. `DescribeAllMembers` unions the `ITypeInfo` and interop-assembly paths for objects (like a document root) where neither alone sees everything.
+- **Selection is identifiable, not just countable** — `SelectionInspector.GetSelection` turns "2 things selected" into "this edge, that face", closing the silent-wrong-entity failure mode a selection-driven write cannot otherwise detect.
 
 ## Building
 

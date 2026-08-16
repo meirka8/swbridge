@@ -139,4 +139,74 @@ public class ComTypeInspectorTests
         Assert.False(ComTypeInspector.FeatureDataFilter(typeof(IFeature)));
         Assert.False(ComTypeInspector.FeatureDataFilter(typeof(ISldWorks)));
     }
+
+    // --- DescribeAllMembers (Gap 3: discovery blind on the document root) ---
+    // A genuine "both paths return real, partially-overlapping members" case
+    // needs a live SolidWorks object (see the sample's discovery demo, run
+    // against Part2's ModelDoc2, for the real EditRebuild3/SaveAs3/EditUndo2/
+    // ClearSelection2 verification). What is testable without SolidWorks here
+    // is the union/dedup mechanics themselves, using FileSystemObject as a
+    // stand-in for "the ITypeInfo path finds something, the interop-assembly
+    // path finds nothing" (FSO is a real COM object but implements none of
+    // SolidWorks' interop interfaces).
+
+    [Fact]
+    public void DescribeAllMembers_NullObject_ReturnsEmpty()
+    {
+        Assert.Empty(ComTypeInspector.DescribeAllMembers(null));
+    }
+
+    [Fact]
+    public void DescribeAllMembers_NonSolidWorksComObject_EqualsTypeInfoPathAlone()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        try
+        {
+            var viaTypeInfo = ComTypeInspector.DescribeMembers(fso);
+            var viaAll = ComTypeInspector.DescribeAllMembers(fso);
+
+            Assert.NotEmpty(viaTypeInfo); // sanity: FSO does support ITypeInfo
+            Assert.Equal(viaTypeInfo.Count, viaAll.Count);
+            Assert.Equal(
+                viaTypeInfo.Select(m => (m.Name, m.Kind, m.ParamCount)).OrderBy(t => t.Name).ToList(),
+                viaAll.Select(m => (m.Name, m.Kind, m.ParamCount)).OrderBy(t => t.Name).ToList());
+        }
+        finally
+        {
+            ComLifetime.Release(fso);
+        }
+    }
+
+    [Fact]
+    public void DescribeAllMembers_PlainDotNetObject_ReturnsEmptyWithoutThrowing()
+    {
+        Assert.Empty(ComTypeInspector.DescribeAllMembers(new object()));
+    }
+
+    [Fact]
+    public void DescribeAllMembers_FilterIsForwardedToInteropPath()
+    {
+        var fso = CreateFileSystemObject();
+        if (fso == null)
+        {
+            return; // ProgID unavailable on this machine — skip gracefully.
+        }
+
+        try
+        {
+            // A filter that matches nothing means the interop path contributes
+            // nothing, but the ITypeInfo path's members must still come through.
+            var members = ComTypeInspector.DescribeAllMembers(fso, _ => false);
+            Assert.NotEmpty(members);
+        }
+        finally
+        {
+            ComLifetime.Release(fso);
+        }
+    }
 }

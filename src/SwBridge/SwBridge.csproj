@@ -6,9 +6,9 @@
     <Nullable>enable</Nullable>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
     <PackageId>SwBridge</PackageId>
-    <Version>0.5.0</Version>
+    <Version>0.6.0</Version>
     <Authors>Meir Kanevskiy</Authors>
-    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance (all COM work serialized on a message-pumping, timeout-bounded STA dispatcher), resolve open documents, read the feature tree generically via schema-driven reflection, discover a late-bound COM object's real members, and write via explicit single-flag COM invocation, strictly read-only dotted path resolution, ownership-aware DTO result conversion and document-state probes.</Description>
+    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance (all COM work serialized on a message-pumping, timeout-bounded STA dispatcher), resolve open documents, read the feature tree generically via schema-driven reflection, discover a late-bound COM object's real members (including the union of every discovery mechanism), read back the identity of the current selection, and write via explicit single-flag COM invocation, strictly read-only dotted path resolution, ownership-aware DTO result conversion and document-state probes.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/meirka8/swbridge</RepositoryUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>

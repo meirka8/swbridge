@@ -449,6 +449,75 @@ public static class ComTypeInspector
     }
 
     /// <summary>
+    /// The union of <see cref="DescribeMembers(object?)"/> and
+    /// <see cref="DescribeMembersViaInterop(object?, Func{Type, bool}?)"/>,
+    /// deduplicated by <c>(Name, Kind, ParamCount)</c>, instead of the
+    /// either/or fallback <see cref="ModelInspector.DescribeFeatureDefinition"/>
+    /// uses. The two mechanisms are not always redundant with each other on the
+    /// same object: a document root (e.g. a live <c>ModelDoc2</c>/<c>PartDoc</c>)
+    /// answers <see cref="DescribeMembers(object?)"/> with a real, non-empty list
+    /// via <c>IProvideClassInfo</c> (its own coclass's default interface) —
+    /// but that default interface does not include everything the object's
+    /// <em>other</em> implemented interfaces declare. Concretely, a
+    /// <c>PartDoc</c>'s coclass default interface does not surface
+    /// <c>IModelDoc2</c> members like <c>EditRebuild3</c>, <c>SaveAs3</c>,
+    /// <c>EditUndo2</c> or <c>ClearSelection2</c> — which the interop probe
+    /// finds immediately, because <c>IModelDoc2</c> is just another
+    /// <c>[ComImport]</c> interface the same live object answers <c>true</c>
+    /// to a QueryInterface for. Neither existing method alone sees the full
+    /// picture on an object like this; this one does, at the cost of always
+    /// running both.
+    /// </summary>
+    /// <param name="comObject">The COM object to inspect. Null yields an empty list.</param>
+    /// <param name="interopFilter">
+    /// Forwarded to <see cref="DescribeMembersViaInterop(object?, Func{Type, bool}?)"/>/
+    /// <see cref="FindImplementedInteropInterfaces"/>. Defaults to null —
+    /// <em>unfiltered</em>, deliberately: this method does not impose an
+    /// opinion about the tradeoff between completeness and probe cost (an
+    /// unfiltered call QueryInterfaces the whole interop assembly — a few
+    /// thousand cross-process calls — and blocks the calling dispatcher for the
+    /// duration if run inside one). That policy call belongs to the caller, who
+    /// knows what it is looking for and how expensive it is prepared to be; pass
+    /// <see cref="FeatureDataFilter"/> or a narrower predicate of your own when
+    /// you do not need a full scan.
+    /// </param>
+    public static IReadOnlyList<ComMemberInfo> DescribeAllMembers(object? comObject, Func<Type, bool>? interopFilter = null)
+    {
+        var viaTypeInfo = DescribeMembers(comObject);
+        var viaInterop = DescribeMembersViaInterop(comObject, interopFilter);
+
+        if (viaInterop.Count == 0)
+        {
+            return viaTypeInfo;
+        }
+
+        if (viaTypeInfo.Count == 0)
+        {
+            return viaInterop;
+        }
+
+        var seen = new HashSet<(string Name, ComMemberKind Kind, int ParamCount)>();
+        var results = new List<ComMemberInfo>();
+        foreach (var member in viaTypeInfo)
+        {
+            if (seen.Add((member.Name, member.Kind, member.ParamCount)))
+            {
+                results.Add(member);
+            }
+        }
+
+        foreach (var member in viaInterop)
+        {
+            if (seen.Add((member.Name, member.Kind, member.ParamCount)))
+            {
+                results.Add(member);
+            }
+        }
+
+        return results;
+    }
+
+    /// <summary>
     /// Reflects the public members of a single interop interface type into
     /// <see cref="ComMemberInfo"/> entries: property getters/setters from
     /// <see cref="Type.GetProperties()"/>, and ordinary methods from
