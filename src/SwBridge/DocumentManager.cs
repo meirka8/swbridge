@@ -160,8 +160,8 @@ public sealed class DocumentManager
     /// <param name="templatePath">
     /// Path to a <c>.prtdot</c> template. When omitted, uses SolidWorks' own
     /// configured default part template
-    /// (<c>swUserPreferenceStringValue_e.swDefaultTemplatePart</c>) — the
-    /// pattern verified live in <c>docs/seed-verification.md</c> §4.11.
+    /// (<c>swUserPreferenceStringValue_e.swDefaultTemplatePart</c>) — verified
+    /// live against a real SolidWorks installation.
     /// </param>
     /// <exception cref="SwNotRunningException"/>
     /// <exception cref="SwBridgeException">

@@ -1,15 +1,55 @@
 # SwBridge
 
-A small, MIT-licensed .NET library for automating **SolidWorks** through its COM API.
+A small, MIT-licensed .NET library for automating **SOLIDWORKS** through its COM API. Not
+affiliated with or endorsed by Dassault Systèmes SolidWorks Corporation; SOLIDWORKS is their
+registered trademark.
 
-SwBridge attaches to an already-running SolidWorks instance (it never launches one), resolves open documents, and reads the feature tree **generically**: instead of compiling a class per feature type, you describe per feature type which members to read — bare properties (`BothDirections`) or accessor methods with arguments (`GetDepth(true)`) — and SwBridge pulls them off the late-bound feature definition by reflection. New feature types need data, not code.
+SwBridge attaches to an already-running SOLIDWORKS instance (it never launches one), resolves open documents, and reads the feature tree **generically**: instead of compiling a class per feature type, you describe per feature type which members to read — bare properties (`BothDirections`) or accessor methods with arguments (`GetDepth(true)`) — and SwBridge pulls them off the late-bound feature definition by reflection. New feature types need data, not code.
 
-SwBridge is deliberately unopinionated infrastructure — it knows nothing about MCP, AI, licensing, or any particular product. It is usable from any .NET application that wants to script SolidWorks.
+SwBridge is deliberately unopinionated infrastructure — it knows nothing about MCP, AI, licensing, or any particular product. It is usable from any .NET application that wants to script SOLIDWORKS.
+
+> **This library modifies CAD data.** From version 0.4.0 onward it can drive destructive writes —
+> creating and deleting features, editing sketches, saving files — against a live document, with
+> **no undo beyond SOLIDWORKS' own undo stack and no automatic rollback** if a multi-step
+> operation fails partway through (see "The dispatcher" and ADR 0002 in `docs/adr/` for why that
+> is a deliberate choice, not an oversight). The only warranty is MIT's ("AS IS", no warranty of
+> any kind) — there is no additional guarantee that a write does the right thing to the right
+> document. **Test against copies, not documents you cannot afford to lose,** until you have
+> verified a given call sequence against your own SOLIDWORKS version and documents.
+
+This project is maintained on a best-effort basis; no support or response time is guaranteed —
+see [SECURITY.md](SECURITY.md) for how to report a vulnerability privately, and
+[CONTRIBUTING.md](CONTRIBUTING.md) for issues and pull requests.
 
 ## Requirements
 
 - Windows, .NET 8 (`net8.0-windows`)
-- SolidWorks 2021 or later, installed and running
+- SOLIDWORKS installed and running. SwBridge binds to the SolidWorks 2024 interop assemblies
+  (`SolidWorks.Interop.sldworks`/`swconst` 32.1.0) but is late-bound almost everywhere it touches
+  SOLIDWORKS (`ComPropertyReader`, `ComInvoker`, `ComPath`, `ComTypeInspector`), so it is
+  *expected* to work against SOLIDWORKS 2021 and later. It has been **live-tested only against
+  SOLIDWORKS 2026 SP3.0** — earlier versions are untested, not unsupported; reports of what does
+  or doesn't work on your version are welcome as an issue.
+
+**On the interop dependency**: the two `SolidWorks.Interop.*` NuGet packages above are
+third-party re-publications (publisher `avidesk`, not Dassault Systèmes, despite their package
+metadata's `<owners>` field) of DLLs that ship inside every SOLIDWORKS install. They carry **no
+stated license of their own** — restoring them via NuGet is not a grant of rights; a SOLIDWORKS
+license is what actually entitles you to use these DLLs, same as if you copied them out of your
+own install by hand. Dassault's own `redist.txt` (shipped in every SOLIDWORKS install's
+`api\redist\` folder) explicitly permits redistributing these DLLs unmodified, subject to the
+software license terms, and the nuget.org copies are verified byte-identical to the official
+ones. See [`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md) for the full disclosure.
+If you would rather not depend on a community-republished copy, build against your own licensed
+install instead:
+
+```bash
+dotnet build -p:SolidWorksApiRedist="C:\Program Files\Dassault Systemes\SOLIDWORKS 3DEXPERIENCE R2026x\SOLIDWORKS\api\redist"
+```
+
+Setting `$(SolidWorksApiRedist)` to your install's `api\redist` folder swaps the two
+`PackageReference`s for direct `Reference`s against that folder's DLLs — see the comment above
+the relevant `ItemGroup`s in `src/SwBridge/SwBridge.csproj`.
 
 ## Usage
 
@@ -281,4 +321,4 @@ dotnet run --project samples/SwBridge.Sample   # requires SolidWorks running
 
 ## License
 
-[MIT](LICENSE). SolidWorks is a registered trademark of Dassault Systèmes SolidWorks Corporation. This project is not affiliated with or endorsed by Dassault Systèmes.
+[MIT](LICENSE). SOLIDWORKS is a registered trademark of Dassault Systèmes SolidWorks Corporation. This project is not affiliated with or endorsed by Dassault Systèmes. See [`docs/THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md) for the interop dependencies' provenance.

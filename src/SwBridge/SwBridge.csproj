@@ -8,16 +8,68 @@
     <PackageId>SwBridge</PackageId>
     <Version>0.6.0</Version>
     <Authors>Meir Kanevskiy</Authors>
-    <Description>MCP-agnostic .NET abstraction over the SolidWorks COM API: attach to a running instance (all COM work serialized on a message-pumping, timeout-bounded STA dispatcher), resolve open documents, read the feature tree generically via schema-driven reflection, discover a late-bound COM object's real members (including the union of every discovery mechanism), read back the identity of the current selection, and write via explicit single-flag COM invocation, strictly read-only dotted path resolution, ownership-aware DTO result conversion and document-state probes.</Description>
+    <Copyright>Copyright (c) 2026 Meir Kanevskiy</Copyright>
+    <!--
+      First ~100 characters are what search engines/nuget.org render without a
+      click-through, so this leads with what the package is, not with a
+      boundary-rule footnote (see CLAUDE.md's own "MCP-agnostic" framing for
+      that context instead). The trailing sentence is the trademark disclaimer
+      (M1) — kept here too because this text renders on nuget.org independently
+      of README.md.
+    -->
+    <Description>.NET library for automating SOLIDWORKS through its COM API: attach to a running instance (all COM work serialized on a message-pumping, timeout-bounded STA dispatcher), resolve open documents, read the feature tree generically via schema-driven reflection, discover a late-bound COM object's real members (including the union of every discovery mechanism), read back the identity of the current selection, and write via explicit single-flag COM invocation, strictly read-only dotted path resolution, ownership-aware DTO result conversion and document-state probes. SOLIDWORKS is a registered trademark of Dassault Systèmes SolidWorks Corporation; this project is not affiliated with or endorsed by Dassault Systèmes.</Description>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
     <RepositoryUrl>https://github.com/meirka8/swbridge</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/meirka8/swbridge</PackageProjectUrl>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <PackageTags>solidworks;com;automation;cad</PackageTags>
+    <!-- Deterministic build + embedded PDB source info; ContinuousIntegrationBuild
+         is left unset for ordinary local builds (see docs/adr and CLAUDE.md's
+         Release checklist for when/how a release pack sets it). -->
+    <IncludeSymbols>true</IncludeSymbols>
+    <SymbolPackageFormat>snupkg</SymbolPackageFormat>
+    <PublishRepositoryUrl>true</PublishRepositoryUrl>
+    <EmbedUntrackedSources>true</EmbedUntrackedSources>
   </PropertyGroup>
 
-  <ItemGroup>
-    <PackageReference Include="SolidWorks.Interop.SldWorks" Version="32.1.0" />
+  <!--
+    C2 escape hatch: SwBridge depends on two Dassault SolidWorks interop
+    assemblies via community-republished NuGet packages (see README's
+    Requirements section and docs/THIRD-PARTY-NOTICES.md for the full
+    disclosure — no stated license on those packages; a SOLIDWORKS license is
+    what actually grants you the right to use these DLLs, not the NuGet
+    restore). Consumers who would rather bind directly against their own
+    licensed SOLIDWORKS installation's copies can set the MSBuild property
+    $(SolidWorksApiRedist) to that installation's "api\redist" folder (e.g.
+    "C:\Program Files\Dassault Systemes\SOLIDWORKS 3DEXPERIENCE R2026x\SOLIDWORKS\api\redist"),
+    either as a build property or an environment variable:
+
+      dotnet build -p:SolidWorksApiRedist="C:\...\SOLIDWORKS\api\redist"
+
+    which replaces the two PackageReferences below with direct References
+    against that folder's DLLs instead. Dassault's own redist.txt in that
+    folder explicitly permits redistributing these two DLLs unmodified.
+  -->
+  <ItemGroup Condition="'$(SolidWorksApiRedist)' == ''">
+    <PackageReference Include="SolidWorks.Interop.sldworks" Version="32.1.0" />
     <PackageReference Include="SolidWorks.Interop.swconst" Version="32.1.0" />
+  </ItemGroup>
+
+  <ItemGroup Condition="'$(SolidWorksApiRedist)' != ''">
+    <Reference Include="SolidWorks.Interop.sldworks">
+      <HintPath>$(SolidWorksApiRedist)\SolidWorks.Interop.sldworks.dll</HintPath>
+      <Private>true</Private>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+    <Reference Include="SolidWorks.Interop.swconst">
+      <HintPath>$(SolidWorksApiRedist)\SolidWorks.Interop.swconst.dll</HintPath>
+      <Private>true</Private>
+      <EmbedInteropTypes>false</EmbedInteropTypes>
+    </Reference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.SourceLink.GitHub" Version="8.0.0" PrivateAssets="All" />
   </ItemGroup>
 
   <ItemGroup>
